@@ -1,0 +1,8 @@
+{
+  // Only build references.
+  "files": [],
+  "references": [
+    { "path": "./src/client" },
+    { "path": "./src/server" }
+  ]
+}
