@@ -1,7 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { GameState, GameObject } from '../types/game';
+import type { DevvitMessage, WebViewMessage } from '../server/message';
 
 const GAME_DURATION = 30; // seconds
+
+// Declare global postMessage function for Devvit communication
+declare global {
+  interface Window {
+    parent: {
+      postMessage: (message: { type: string; data: { message: WebViewMessage } }, origin: string) => void;
+    };
+  }
+}
 
 const COMMENT_TEMPLATES = {
   good: [
@@ -27,7 +37,7 @@ const COMMENT_TEMPLATES = {
     { text: "This is stupid and you're dumb", username: "u/NoBrainGang" },
     { text: "Cringe af delete this", username: "u/CringePolice" },
     { text: "Nobody asked", username: "u/SilentMajority" },
-    { text: "“I feel bad for you, must be hard being this stupid.”", username: "u/KarenOfReddit" },
+    { text: "I feel bad for you, must be hard being this stupid.", username: "u/KarenOfReddit" },
     { text: "You're what's wrong with Reddit", username: "u/GatekeepingElite" },
     { text: "Don't take your meds, big pharma just wants you addicted", username: "r/conspiracy" },
     { text: "Kill yourself", username: "u/EdgeMax2000" }
@@ -49,7 +59,7 @@ const COMMENT_TEMPLATES = {
     { text: "You're all just NPCs anyway", username: "u/MatrixAwakened" },
     { text: "Flat Earth makes more sense than NASA's lies", username: "u/GlobeDenier" },
     { text: "Literally Hitler was misunderstood", username: "u/AltHistoryFan" },
-    { text: "“Trans people are mentally ill. Prove me wrong.”", username: "u/JustAskingQuestions" },
+    { text: "Trans people are mentally ill. Prove me wrong.", username: "u/JustAskingQuestions" },
     { text: "Reddit is full of brainwashed soyboys", username: "u/MeatPill" }
   ],
   spam: [
@@ -66,6 +76,17 @@ const COMMENT_TEMPLATES = {
   ]
 };
 
+// Helper function to send messages to Devvit
+const sendMessageToDevvit = (message: WebViewMessage) => {
+  try {
+    window.parent.postMessage(
+      { type: 'devvit-message', data: { message } },
+      '*'
+    );
+  } catch (error) {
+    console.error('Failed to send message to Devvit:', error);
+  }
+};
 
 export const useGameLogic = () => {
   const [gameState, setGameState] = useState<GameState>({
@@ -81,6 +102,37 @@ export const useGameLogic = () => {
     highScore: parseInt(localStorage.getItem('redditModHighScore') || '0'),
     postKarma: 1
   });
+
+  // Initialize Devvit communication
+  useEffect(() => {
+    // Send ready message to Devvit
+    sendMessageToDevvit({ type: 'webViewReady' });
+
+    // Listen for messages from Devvit
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'devvit-message') {
+        const message: DevvitMessage = event.data.data.message;
+        
+        switch (message.type) {
+          case 'initialData':
+            console.log('Received initial data:', message.data);
+            // Request high score from Devvit
+            sendMessageToDevvit({ type: 'getHighScore' });
+            break;
+            
+          case 'highScoreData':
+            setGameState(prev => ({
+              ...prev,
+              highScore: message.data.highScore
+            }));
+            break;
+        }
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   // Game loop for moving objects and spawning new ones
   useEffect(() => {
@@ -136,11 +188,21 @@ export const useGameLogic = () => {
     return () => clearInterval(timer);
   }, [gameState.gameStatus]);
 
-  // Save high score based on postKarma instead of score
+  // Save high score to both localStorage and Devvit Redis
   useEffect(() => {
     if (gameState.gameStatus === 'ended' && gameState.postKarma > gameState.highScore) {
-      localStorage.setItem('redditModHighScore', gameState.postKarma.toString());
-      setGameState(prev => ({ ...prev, highScore: gameState.postKarma }));
+      const newHighScore = gameState.postKarma;
+      
+      // Save to localStorage as backup
+      localStorage.setItem('redditModHighScore', newHighScore.toString());
+      
+      // Save to Devvit Redis
+      sendMessageToDevvit({ 
+        type: 'saveHighScore', 
+        data: { score: newHighScore } 
+      });
+      
+      setGameState(prev => ({ ...prev, highScore: newHighScore }));
     }
   }, [gameState.gameStatus, gameState.postKarma, gameState.highScore]);
 
@@ -157,34 +219,36 @@ export const useGameLogic = () => {
       'rickroll'
     ];
     
-    // The total weights are: good-comment: 4/15 (26.7%) helpful-comment: 2/15 (13.3%) bad-comment: 3/15 (20%) spam-bot: 2/15 (13.3%) All others: 1/15 (6.7% each)
     const type = types[Math.floor(Math.random() * types.length)];
 
     let text = '';
     let points = 0;
     let username = '';
 
-    
     switch (type) {
       case 'good-comment':
-        text = COMMENT_TEMPLATES.good[Math.floor(Math.random() * COMMENT_TEMPLATES.good.length)].text;
+        const goodTemplate = COMMENT_TEMPLATES.good[Math.floor(Math.random() * COMMENT_TEMPLATES.good.length)];
+        text = goodTemplate.text;
+        username = goodTemplate.username;
         points = -5; // Click to approve
-        username = COMMENT_TEMPLATES.good[Math.floor(Math.random() * COMMENT_TEMPLATES.good.length)].username;
         break;  
       case 'helpful-comment':
-        text = COMMENT_TEMPLATES.helpful[Math.floor(Math.random() * COMMENT_TEMPLATES.helpful.length)].text;
+        const helpfulTemplate = COMMENT_TEMPLATES.helpful[Math.floor(Math.random() * COMMENT_TEMPLATES.helpful.length)];
+        text = helpfulTemplate.text;
+        username = helpfulTemplate.username;
         points = -10; // Click to approve, more valuable
-        username = COMMENT_TEMPLATES.helpful[Math.floor(Math.random() * COMMENT_TEMPLATES.helpful.length)].username;
         break;
       case 'bad-comment':
-        text = COMMENT_TEMPLATES.bad[Math.floor(Math.random() * COMMENT_TEMPLATES.bad.length)].text;
+        const badTemplate = COMMENT_TEMPLATES.bad[Math.floor(Math.random() * COMMENT_TEMPLATES.bad.length)];
+        text = badTemplate.text;
+        username = badTemplate.username;
         points = 10; // Click to DELETE (positive points for correct action)
-        username = COMMENT_TEMPLATES.bad[Math.floor(Math.random() * COMMENT_TEMPLATES.bad.length)].username;
         break;
       case 'spam-bot':
-        text = COMMENT_TEMPLATES.spam[Math.floor(Math.random() * COMMENT_TEMPLATES.spam.length)].text;
+        const spamTemplate = COMMENT_TEMPLATES.spam[Math.floor(Math.random() * COMMENT_TEMPLATES.spam.length)];
+        text = spamTemplate.text;
+        username = spamTemplate.username;
         points = 7; // Click to DELETE (positive points)
-        username = COMMENT_TEMPLATES.spam[Math.floor(Math.random() * COMMENT_TEMPLATES.spam.length)].username;
         break;
       case 'repost':
         text = "I've seen this before... pretty sure it's a repost.";
@@ -207,9 +271,10 @@ export const useGameLogic = () => {
         username = `u/YourCakeDayAlt${Math.floor(Math.random()*100)}`;
         break;
       case 'rickroll':
-        text = COMMENT_TEMPLATES.troll[Math.floor(Math.random() * COMMENT_TEMPLATES.good.length)].text;
+        const trollTemplate = COMMENT_TEMPLATES.troll[Math.floor(Math.random() * COMMENT_TEMPLATES.troll.length)];
+        text = trollTemplate.text;
+        username = trollTemplate.username;
         points = 3; // Click to DELETE (annoying but low impact)
-        username = COMMENT_TEMPLATES.troll[Math.floor(Math.random() * COMMENT_TEMPLATES.good.length)].username;
         break;
     }
 
@@ -246,7 +311,7 @@ export const useGameLogic = () => {
       const object = prev.gameObjects.find(obj => obj.id === objectId);
       if (!object) return prev;
 
-      const updatedObjects = prev.gameObjects.filter(obj => obj.id !== objectId); //remove object after clicked
+      const updatedObjects = prev.gameObjects.filter(obj => obj.id !== objectId);
 
       let newScore = prev.score + 1; // Always increment score by 1
       let newCombo = prev.combo;
@@ -291,9 +356,8 @@ export const useGameLogic = () => {
           }
           break;
         }
-        // Add more cases here if needed for other types
         default:
-          // No special handling for other types
+          newPostKarma = prev.postKarma + pointsToAdd;
           break;
       }
 
@@ -315,11 +379,11 @@ export const useGameLogic = () => {
                    gameState.postKarma >= 100 ? "Learning Mod" :
                    gameState.postKarma >= 50 ? "Rookie Mod" : "Chaos Creator";
 
-    const shareText = `🎮 I just survived Reddit Post Panic! My post hit the front page and I moderated ${gameState.score} comments, earning the rank "${modRank}"! 📱\n\nMy post ended with ${gameState.postKarma.toLocaleString()} karma. Can you handle the chaos better than me? #RedditPostPanic`;
+    const shareText = `🎮 I just survived HungryMod Karma! My post hit the front page and I moderated ${gameState.score} comments, earning the rank "${modRank}"! 📱\n\nMy post ended with ${gameState.postKarma.toLocaleString()} karma. Can you handle the chaos better than me? #HungryModKarma`;
     
     if (navigator.share) {
       navigator.share({
-        title: 'Reddit Post Panic Results',
+        title: 'HungryMod Karma Results',
         text: shareText,
         url: window.location.href
       });
